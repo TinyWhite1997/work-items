@@ -10,18 +10,20 @@ Use the installed `work-items` command. It operates the same persisted store as 
 
 ## Safe workflow
 
-1. Start with `work-items config show` and `work-items list`.
-2. Before adding a child, copy the exact parent `id` from `work-items list`; do not guess IDs.
-3. Create only `Epic`, `Feature`, `Task`, or `Bug` items.
-4. Query again after a mutation and report the created item ID.
-5. Never edit the JSON data file directly. The CLI/API owns validation, locking, and atomic writes.
+1. Start with `work-items config show` and `work-items project list`.
+2. Create a project or copy its exact `id` before adding project work.
+3. Before adding a child, copy the exact parent `id` from `work-items list --project PROJECT_ID`; do not guess IDs.
+4. Create only `Epic`, `Feature`, `Task`, or `Bug` items.
+5. Query again after a mutation and report the created item ID.
+6. Never edit the JSON data file directly. The CLI/API owns validation, locking, and atomic writes.
 
 ```sh
 work-items config show
-work-items list
-work-items add "Release 1" --type Epic --description "Concise outcome"
-work-items add "Nested work" --type Task --parent PARENT_ID
-work-items list --parent PARENT_ID
+work-items project add "Website"
+work-items project list
+work-items add "Release 1" --type Epic --project PROJECT_ID --description "Concise outcome"
+work-items add "Nested work" --type Task --project PROJECT_ID --parent PARENT_ID
+work-items list --project PROJECT_ID --parent PARENT_ID
 ```
 
 ## Remote server

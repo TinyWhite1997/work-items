@@ -14,7 +14,7 @@ work-items open
 # opens http://127.0.0.1:37481
 ```
 
-The install creates the `work-items` executable in `~/.local/bin`. If that directory is not on `PATH`, the installer prints the one-line fix. To install a checkout instead, use `python3 -m pip install .`. The packaged `work_items/web/` build is served directly. The UI is a shadcn/ui + React frontend with a nested tree, icon-coded Epic/Feature/Task/Bug rows, and a responsive detail sheet. **Expand details** widens the sheet; **Return to tree** restores the split view.
+The install creates the `work-items` executable in `~/.local/bin`. If that directory is not on `PATH`, the installer prints the one-line fix. To install a checkout instead, use `python3 -m pip install .`. The packaged `work_items/web/` build is served directly. The UI supports independent projects, each with its own nested tree and icon-coded Epic/Feature/Task/Bug items. The header also has a persistent light/dark switch. **Expand details** widens the sheet; **Return to tree** restores the split view.
 
 ## Agent skill
 
@@ -51,10 +51,15 @@ work-items config set-url http://SERVER_IP:37481
 work-items config show
 
 # These now use the remote server's persisted store.
-work-items add "Release 1" --type Epic --description "First local release"
-work-items list
-work-items add "Core UI" --type Feature --parent EPIC_ID
-work-items list --parent EPIC_ID
+# Create and query projects first.
+work-items project add "Website"
+work-items project list
+
+# Use the exact project ID for a separate work tree.
+work-items add "Release 1" --type Epic --project PROJECT_ID --description "First local release"
+work-items list --project PROJECT_ID
+work-items add "Core UI" --type Feature --project PROJECT_ID --parent EPIC_ID
+work-items list --project PROJECT_ID --parent EPIC_ID
 
 # Return this CLI to its local JSON store.
 work-items config clear-url
