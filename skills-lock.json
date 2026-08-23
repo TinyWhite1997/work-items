@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "work-items": {
+      "source": "TinyWhite1997/work-items",
+      "sourceType": "github",
+      "skillPath": "skills/work-items/SKILL.md",
+      "computedHash": "83389df3cc52af54dddeec2dd88681ffd8dd046ed84a48dd8ab08ae1794364b8"
+    }
+  }
+}
