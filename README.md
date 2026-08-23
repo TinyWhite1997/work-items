@@ -5,7 +5,8 @@ A self-hosted, local-first work-item manager. It uses Python's standard library 
 ## Install and run
 
 ```sh
-python3 -m pip install .
+# Downloads the pinned release wheel, verifies its SHA-256, and installs without sudo.
+curl -fsSL https://raw.githubusercontent.com/TinyWhite1997/work-items/main/install.sh | sh
 
 # One local daemon serves both the compiled web UI and its API.
 work-items daemon
@@ -13,7 +14,7 @@ work-items open
 # opens http://127.0.0.1:37481
 ```
 
-The install creates the `work-items` executable. The packaged `work_items/web/` build is served directly. The UI is a shadcn/ui + React frontend with a nested tree, icon-coded Epic/Feature/Task/Bug rows, and a responsive detail sheet. **Expand details** widens the sheet; **Return to tree** restores the split view.
+The install creates the `work-items` executable in `~/.local/bin`. If that directory is not on `PATH`, the installer prints the one-line fix. To install a checkout instead, use `python3 -m pip install .`. The packaged `work_items/web/` build is served directly. The UI is a shadcn/ui + React frontend with a nested tree, icon-coded Epic/Feature/Task/Bug rows, and a responsive detail sheet. **Expand details** widens the sheet; **Return to tree** restores the split view.
 
 ## Agent skill
 
@@ -39,7 +40,7 @@ The Vite development server proxies `/api` to `http://127.0.0.1:37481`; start `w
 
 ## CLI
 
-By default, the CLI reads the local `data/items.json`. Configure a URL once on every client device to have `add` and `list` use a server's HTTP API instead.
+By default, the CLI reads the local `~/.local/share/work-items/items.json`. Configure a URL once on every client device to have `add` and `list` use a server's HTTP API instead.
 
 ```sh
 # On the host machine: one daemon binds the web UI and API to its LAN interface.
