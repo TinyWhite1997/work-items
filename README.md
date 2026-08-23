@@ -15,6 +15,16 @@ work-items open
 
 The install creates the `work-items` executable. The packaged `work_items/web/` build is served directly. The UI is a shadcn/ui + React frontend with a nested tree, icon-coded Epic/Feature/Task/Bug rows, and a responsive detail sheet. **Expand details** widens the sheet; **Return to tree** restores the split view.
 
+## Agent skill
+
+[![skills.sh](https://skills.sh/b/TinyWhite1997/work-items)](https://skills.sh/TinyWhite1997/work-items)
+
+The repository exposes a discoverable `skills/work-items/SKILL.md` skill for agents that operate this CLI:
+
+```sh
+npx skills add TinyWhite1997/work-items --skill work-items
+```
+
 ### Change the UI
 
 ```sh
