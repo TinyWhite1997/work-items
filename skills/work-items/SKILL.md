@@ -14,15 +14,16 @@ Use the installed `work-items` command. It operates the same persisted store as 
 2. Create a project or copy its exact `id` before adding project work.
 3. Before adding a child, copy the exact parent `id` from `work-items list --project PROJECT_ID`; do not guess IDs.
 4. Create only `Epic`, `Feature`, `Task`, or `Bug` items.
-5. Query again after a mutation and report the created item ID.
-6. Never edit the JSON data file directly. The CLI/API owns validation, locking, and atomic writes.
+5. Set status to `open`, `inprogress`, `closed`, `resolved`, or `blocked`, and priority to `low`, `medium`, `high`, or `urgent` when the user supplies them; otherwise accept the CLI defaults (`open`, `medium`).
+6. Query again after a mutation and report the created item ID.
+7. Never edit the JSON data file directly. The CLI/API owns validation, locking, and atomic writes.
 
 ```sh
 work-items config show
 work-items project add "Website"
 work-items project list
-work-items add "Release 1" --type Epic --project PROJECT_ID --description "Concise outcome"
-work-items add "Nested work" --type Task --project PROJECT_ID --parent PARENT_ID
+work-items add "Release 1" --type Epic --project PROJECT_ID --status inprogress --priority high --description "Concise outcome"
+work-items add "Nested work" --type Task --project PROJECT_ID --parent PARENT_ID --status open --priority medium
 work-items list --project PROJECT_ID --parent PARENT_ID
 ```
 

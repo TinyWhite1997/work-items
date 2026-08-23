@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 TYPES = ("Epic", "Feature", "Task", "Bug")
+STATUSES = ("open", "inprogress", "closed", "resolved", "blocked")
+PRIORITIES = ("low", "medium", "high", "urgent")
 
 
 def data_path() -> Path:
@@ -100,9 +102,10 @@ class Store:
             raise ValueError(f"Invalid data file: {self.path}") from error
         # v0.0.1 stored a bare item list. Read it as a General project until the next write.
         if isinstance(data, list):
-            return {"projects": [{"id": "general", "name": "General", "created_at": now(), "updated_at": now()}], "items": [{**item, "project_id": item.get("project_id", "general")} for item in data]}
+            data = {"projects": [{"id": "general", "name": "General", "created_at": now(), "updated_at": now()}], "items": [{**item, "project_id": item.get("project_id", "general")} for item in data]}
         if not isinstance(data, dict) or not isinstance(data.get("projects"), list) or not isinstance(data.get("items"), list):
             raise ValueError(f"Data file must contain projects and items: {self.path}")
+        data["items"] = [{**item, "status": item.get("status", "open"), "priority": item.get("priority", "medium")} for item in data["items"]]
         return data
 
     def save(self, state: dict) -> None:
@@ -140,17 +143,23 @@ class Store:
         item_type = payload.get("type", existing.get("type") if existing else "Task")
         description = payload.get("description", existing.get("description") if existing else "")
         parent_id = payload.get("parent_id", existing.get("parent_id") if existing else None)
+        status = payload.get("status", existing.get("status", "open") if existing else "open")
+        priority = payload.get("priority", existing.get("priority", "medium") if existing else "medium")
         if not isinstance(title, str) or not title.strip():
             raise ValueError("title is required")
         if not isinstance(item_type, str) or item_type not in TYPES:
             raise ValueError("type must be one of: " + ", ".join(TYPES))
         if not isinstance(description, str):
             raise ValueError("description must be text")
+        if not isinstance(status, str) or status not in STATUSES:
+            raise ValueError("status must be one of: " + ", ".join(STATUSES))
+        if not isinstance(priority, str) or priority not in PRIORITIES:
+            raise ValueError("priority must be one of: " + ", ".join(PRIORITIES))
         if parent_id == "":
             parent_id = None
         if parent_id is not None and not isinstance(parent_id, str):
             raise ValueError("parent_id must be a string or null")
-        return {"title": title.strip(), "type": item_type, "description": description, "parent_id": parent_id}
+        return {"title": title.strip(), "type": item_type, "description": description, "parent_id": parent_id, "status": status, "priority": priority}
 
     @staticmethod
     def _descendant(items: list[dict], candidate_parent: str, item_id: str) -> bool:
@@ -309,7 +318,7 @@ def run_server(host: str, port: int) -> None:
 
 
 def cli_add(args: argparse.Namespace) -> None:
-    payload = {"title": args.title, "type": args.type, "parent_id": args.parent, "project_id": args.project, "description": args.description}
+    payload = {"title": args.title, "type": args.type, "parent_id": args.parent, "project_id": args.project, "status": args.status, "priority": args.priority, "description": args.description}
     url = configured_url()
     item = remote_request(url, "/api/items", "POST", payload) if url else Store(data_path()).add(payload)
     print(json.dumps(item, indent=2))
@@ -362,9 +371,10 @@ def check() -> None:
         store = Store(Path(directory) / "items.json")
         alpha = store.add_project({"name": "Alpha"})
         beta = store.add_project({"name": "Beta"})
-        epic = store.add({"title": "Roadmap", "type": "Epic", "project_id": alpha["id"], "description": ""})
+        epic = store.add({"title": "Roadmap", "type": "Epic", "project_id": alpha["id"], "status": "inprogress", "priority": "high", "description": ""})
         task = store.add({"title": "Ship", "type": "Task", "project_id": alpha["id"], "parent_id": epic["id"], "description": ""})
         assert Store(store.path).items(alpha["id"])[1]["parent_id"] == epic["id"]
+        assert epic["status"] == "inprogress" and epic["priority"] == "high"
         assert not Store(store.path).items(beta["id"])
         try:
             store.add({"title": "Wrong project", "type": "Task", "project_id": beta["id"], "parent_id": epic["id"], "description": ""})
@@ -395,6 +405,8 @@ def main() -> None:
     add.add_argument("--type", choices=TYPES, default="Task")
     add.add_argument("--project", help="project ID (defaults to the first or General project)")
     add.add_argument("--parent", help="parent item ID in the same project")
+    add.add_argument("--status", choices=STATUSES, default="open")
+    add.add_argument("--priority", choices=PRIORITIES, default="medium")
     add.add_argument("--description", default="")
     listing = sub.add_parser("list", help="print stored items as JSON")
     listing.add_argument("--project", help="only items in this project")

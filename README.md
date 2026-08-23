@@ -14,7 +14,7 @@ work-items open
 # opens http://127.0.0.1:37481
 ```
 
-The install creates the `work-items` executable in `~/.local/bin`. If that directory is not on `PATH`, the installer prints the one-line fix. To install a checkout instead, use `python3 -m pip install .`. The packaged `work_items/web/` build is served directly. The UI supports independent projects, each with its own nested tree and icon-coded Epic/Feature/Task/Bug items. The header also has a persistent light/dark switch. **Expand details** widens the sheet; **Return to tree** restores the split view.
+The install creates the `work-items` executable in `~/.local/bin`. If that directory is not on `PATH`, the installer prints the one-line fix. To install a checkout instead, use `python3 -m pip install .`. The packaged `work_items/web/` build is served directly. The UI supports independent projects, each with its own nested tree and icon-coded Epic/Feature/Task/Bug items. Items have colored `open`, `inprogress`, `closed`, `resolved`, or `blocked` status and a `low`, `medium`, `high`, or `urgent` priority. Switch between the Tree and Status board views; the header also has a persistent light/dark switch. **Expand details** widens the sheet; **Return to tree** restores the split view.
 
 ## Agent skill
 
@@ -56,9 +56,9 @@ work-items project add "Website"
 work-items project list
 
 # Use the exact project ID for a separate work tree.
-work-items add "Release 1" --type Epic --project PROJECT_ID --description "First local release"
+work-items add "Release 1" --type Epic --project PROJECT_ID --status inprogress --priority high --description "First local release"
 work-items list --project PROJECT_ID
-work-items add "Core UI" --type Feature --project PROJECT_ID --parent EPIC_ID
+work-items add "Core UI" --type Feature --project PROJECT_ID --parent EPIC_ID --status open --priority medium
 work-items list --project PROJECT_ID --parent EPIC_ID
 
 # Return this CLI to its local JSON store.
