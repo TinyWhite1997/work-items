@@ -2,11 +2,11 @@
 # Install the Work Items CLI without sudo.
 set -eu
 
-VERSION="v0.0.2"
+VERSION="v0.0.3"
 VERSION_NUMBER="${VERSION#v}"
 WHEEL="work_items-${VERSION_NUMBER}-py3-none-any.whl"
 URL="https://github.com/TinyWhite1997/work-items/releases/download/${VERSION}/${WHEEL}"
-SHA256="c306b8497d8383ce755d05a36ea1a63c8307b87cc8acf63d177cbf09ef428296"
+SHA256="434d7e25a9454e5783bade9f256c9c63ac85de773002738d150fee99a8379ddb"
 PYTHON="${PYTHON:-python3}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 INSTALL_DIR="${WORK_ITEMS_INSTALL_DIR:-$DATA_HOME/work-items/venv}"
