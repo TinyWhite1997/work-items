@@ -1,6 +1,6 @@
 # Work Items
 
-A self-hosted, local-first work-item manager. It uses Python's standard library and stores data in `~/.local/share/work-items/items.json` (or `WORK_ITEMS_DATA`), so the browser and CLI always use the same file.
+A self-hosted, local-first work-item manager. It uses Python's standard-library SQLite and stores data in `~/.local/share/work-items/items.db` (or `WORK_ITEMS_DATA`), so the browser and CLI always use the same file.
 
 ## Install and run
 
@@ -40,7 +40,7 @@ The Vite development server proxies `/api` to `http://127.0.0.1:37481`; start `w
 
 ## CLI
 
-By default, the CLI reads the local `~/.local/share/work-items/items.json`. Configure a URL once on every client device to have `add` and `list` use a server's HTTP API instead.
+By default, the CLI reads the local `~/.local/share/work-items/items.db` SQLite database. Configure a URL once on every client device to have `add` and `list` use a server's HTTP API instead.
 
 ```sh
 # On the host machine: one daemon binds the web UI and API to its LAN interface.
@@ -61,13 +61,24 @@ work-items list --project PROJECT_ID
 work-items add "Core UI" --type Feature --project PROJECT_ID --parent EPIC_ID --status open --priority medium
 work-items list --project PROJECT_ID --parent EPIC_ID
 
-# Return this CLI to its local JSON store.
+# Return this CLI to its local SQLite store.
 work-items config clear-url
+
+# SQLite snapshots are made automatically before every write.
+work-items backup list
+work-items backup create
 ```
 
-The URL is stored in `~/.config/work-items/config.json` (override with `WORK_ITEMS_CONFIG`). `WORK_ITEMS_URL=http://SERVER_IP:37481` temporarily overrides it, useful for scripts. Output is JSON, including the generated `id`. Types must be `Epic`, `Feature`, `Task`, or `Bug`.
+The URL is stored in `~/.config/work-items/config.json` (override with `WORK_ITEMS_CONFIG`). `WORK_ITEMS_URL=http://SERVER_IP:37481` temporarily overrides it, useful for scripts. Output is JSON, including the generated `id`. Types must be `Epic`, `Feature`, `Task`, or `Bug`. Every local mutation creates a pre-write SQLite snapshot in `~/.local/share/work-items/backups/`; the latest 100 are retained. Legacy `items.json` is imported once into SQLite and retained as a migration backup.
 
 The first release has no authentication: expose `0.0.0.0` only on a trusted LAN or behind your own network protection.
+
+## Data safety
+
+- SQLite uses WAL mode and `BEGIN IMMEDIATE` transactions for concurrent CLI and daemon writes.
+- Every successful local mutation makes a SQLite snapshot of the prior committed database; the latest 100 live in `~/.local/share/work-items/backups/`.
+- A legacy JSON store is copied into that backup directory before import and is never deleted by migration.
+- The installer updates only its isolated virtual environment; it never removes or overwrites the data directory.
 
 ## Checks
 

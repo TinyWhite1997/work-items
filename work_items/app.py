@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""A tiny local-first work-item server and CLI. Requires Python 3.10+."""
+"""A local-first work-item server and CLI backed by SQLite. Requires Python 3.10+."""
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
+import shutil
+import sqlite3
 import tempfile
-import threading
 import uuid
 import webbrowser
 from contextlib import contextmanager
@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -25,13 +25,13 @@ STATUSES = ("open", "inprogress", "closed", "resolved", "blocked")
 PRIORITIES = ("low", "medium", "high", "urgent")
 
 
-def data_path() -> Path:
-    default = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "work-items" / "items.json"
-    return Path(os.environ.get("WORK_ITEMS_DATA", default))
-
-
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def data_path() -> Path:
+    default = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "work-items" / "items.db"
+    return Path(os.environ.get("WORK_ITEMS_DATA", default))
 
 
 def config_path() -> Path:
@@ -39,7 +39,6 @@ def config_path() -> Path:
 
 
 def configured_url() -> str | None:
-    """An environment variable wins, so automation need not alter a user's config."""
     url = os.environ.get("WORK_ITEMS_URL")
     if not url and config_path().exists():
         try:
@@ -77,49 +76,132 @@ def remote_request(url: str, path: str, method: str = "GET", payload: dict | Non
 
 
 class Store:
-    """Small JSON store; one locked, atomically replaced file contains projects and items."""
+    """SQLite store with WAL transactions and a pre-write SQLite backup."""
 
     def __init__(self, path: Path):
-        self.path = path
-        self.lock = threading.RLock()
+        # A configured legacy JSON path migrates beside itself to a SQLite database.
+        self.legacy_path = path if path.suffix == ".json" else path.with_suffix(".json")
+        self.path = path.with_suffix(".db") if path.suffix == ".json" else path
+        self.backups = self.path.parent / "backups"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                PRAGMA journal_mode = WAL;
+                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS projects (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS items (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL,
+                  type TEXT NOT NULL CHECK(type IN ('Epic','Feature','Task','Bug')),
+                  description TEXT NOT NULL,
+                  parent_id TEXT REFERENCES items(id),
+                  project_id TEXT NOT NULL REFERENCES projects(id),
+                  status TEXT NOT NULL CHECK(status IN ('open','inprogress','closed','resolved','blocked')),
+                  priority TEXT NOT NULL CHECK(priority IN ('low','medium','high','urgent')),
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS items_project ON items(project_id);
+                CREATE INDEX IF NOT EXISTS items_parent ON items(parent_id);
+                """
+            )
+            migrated = connection.execute("SELECT 1 FROM metadata WHERE key = 'legacy_json_imported'").fetchone()
+            empty = not connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone() and not connection.execute("SELECT 1 FROM items LIMIT 1").fetchone()
+            if self.legacy_path.exists() and not migrated and empty:
+                self._migrate_json(connection)
+                connection.execute("INSERT INTO metadata VALUES ('legacy_json_imported', ?)", (now(),))
+
+    def _migrate_json(self, connection: sqlite3.Connection) -> None:
+        """Import legacy JSON atomically; retain it as a recovery artifact."""
+        try:
+            raw = json.loads(self.legacy_path.read_text())
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid legacy data file: {self.legacy_path}") from error
+        if isinstance(raw, list):
+            raw = {"projects": [{"id": "general", "name": "General", "created_at": now(), "updated_at": now()}], "items": [{**item, "project_id": item.get("project_id", "general")} for item in raw]}
+        if not isinstance(raw, dict) or not isinstance(raw.get("projects"), list) or not isinstance(raw.get("items"), list):
+            raise ValueError(f"Legacy data file must contain projects and items: {self.legacy_path}")
+        self.backups.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.legacy_path, self.backups / f"items-before-sqlite-{now().replace(':', '-')}.json")
+        project_ids = set()
+        for project in raw["projects"]:
+            connection.execute("INSERT INTO projects VALUES (?, ?, ?, ?)", (project["id"], project["name"], project.get("created_at", now()), project.get("updated_at", now())))
+            project_ids.add(project["id"])
+        if not project_ids and raw["items"]:
+            connection.execute("INSERT INTO projects VALUES ('general', 'General', ?, ?)", (now(), now()))
+            project_ids.add("general")
+        # Insert all rows without parents first, then restore parent references. Legacy exports need not be tree ordered.
+        for item in raw["items"]:
+            project_id = item.get("project_id", "general")
+            if project_id not in project_ids:
+                raise ValueError(f"Legacy item references missing project: {project_id}")
+            connection.execute(
+                "INSERT INTO items VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+                (item["id"], item["title"], item["type"], item.get("description", ""), project_id, item.get("status", "open"), item.get("priority", "medium"), item.get("created_at", now()), item.get("updated_at", now())),
+            )
+        for item in raw["items"]:
+            if item.get("parent_id"):
+                connection.execute("UPDATE items SET parent_id = ? WHERE id = ?", (item["parent_id"], item["id"]))
+
+    def _backup_before_write(self) -> Path:
+        """Snapshot the last committed database before every mutation; keep 100 snapshots."""
+        self.backups.mkdir(parents=True, exist_ok=True)
+        target = self.backups / f"items-{now().replace(':', '-')}-{uuid.uuid4().hex[:6]}.db"
+        with self._connect() as source, sqlite3.connect(target) as destination:
+            source.backup(destination)
+        old = sorted(self.backups.glob("items-*.db"))[:-100]
+        for backup in old:
+            backup.unlink()
+        return target
 
     @contextmanager
     def transaction(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock, open(str(self.path) + ".lock", "a") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-    def _state(self) -> dict:
-        if not self.path.exists():
-            return {"projects": [], "items": []}
+        connection = self._connect()
         try:
-            data = json.loads(self.path.read_text())
-        except json.JSONDecodeError as error:
-            raise ValueError(f"Invalid data file: {self.path}") from error
-        # v0.0.1 stored a bare item list. Read it as a General project until the next write.
-        if isinstance(data, list):
-            data = {"projects": [{"id": "general", "name": "General", "created_at": now(), "updated_at": now()}], "items": [{**item, "project_id": item.get("project_id", "general")} for item in data]}
-        if not isinstance(data, dict) or not isinstance(data.get("projects"), list) or not isinstance(data.get("items"), list):
-            raise ValueError(f"Data file must contain projects and items: {self.path}")
-        data["items"] = [{**item, "status": item.get("status", "open"), "priority": item.get("priority", "medium")} for item in data["items"]]
-        return data
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
-    def save(self, state: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", dir=self.path.parent, prefix=self.path.name + ".", delete=False) as temp:
-            temp.write(json.dumps(state, indent=2) + "\n")
-        Path(temp.name).replace(self.path)
+    @staticmethod
+    def _rows(rows) -> list[dict]:
+        return [dict(row) for row in rows]
 
     def projects(self) -> list[dict]:
-        return self._state()["projects"]
+        with self._connect() as connection:
+            return self._rows(connection.execute("SELECT * FROM projects ORDER BY created_at"))
 
     def items(self, project_id: str | None = None) -> list[dict]:
-        items = self._state()["items"]
-        return [item for item in items if item.get("project_id") == project_id] if project_id else items
+        with self._connect() as connection:
+            if project_id:
+                return self._rows(connection.execute("SELECT * FROM items WHERE project_id = ? ORDER BY created_at", (project_id,)))
+            return self._rows(connection.execute("SELECT * FROM items ORDER BY created_at"))
+
+    def backup_list(self) -> list[dict]:
+        return [{"path": str(path), "bytes": path.stat().st_size} for path in sorted(self.backups.glob("*"), reverse=True)] if self.backups.exists() else []
+
+    def create_backup(self) -> Path:
+        return self._backup_before_write()
 
     @staticmethod
     def _validated_project(payload: dict) -> str:
@@ -129,13 +211,12 @@ class Store:
         return name.strip()
 
     def add_project(self, payload: dict) -> dict:
-        with self.transaction():
-            state = self._state()
-            name = self._validated_project(payload)
-            project = {"id": uuid.uuid4().hex[:10], "name": name, "created_at": now(), "updated_at": now()}
-            state["projects"].append(project)
-            self.save(state)
-            return project
+        name = self._validated_project(payload)
+        project = {"id": uuid.uuid4().hex[:10], "name": name, "created_at": now(), "updated_at": now()}
+        with self.transaction() as connection:
+            self._backup_before_write()
+            connection.execute("INSERT INTO projects VALUES (:id, :name, :created_at, :updated_at)", project)
+        return project
 
     @staticmethod
     def _validated_item(payload: dict, existing: dict | None = None) -> dict:
@@ -162,63 +243,61 @@ class Store:
         return {"title": title.strip(), "type": item_type, "description": description, "parent_id": parent_id, "status": status, "priority": priority}
 
     @staticmethod
-    def _descendant(items: list[dict], candidate_parent: str, item_id: str) -> bool:
-        parents = {item["id"]: item.get("parent_id") for item in items}
-        current = candidate_parent
-        while current:
-            if current == item_id:
-                return True
-            current = parents.get(current)
-        return False
-
-    @staticmethod
-    def _project(state: dict, project_id: str | None) -> dict:
+    def _project(connection: sqlite3.Connection, project_id: str | None) -> dict:
         if project_id:
-            project = next((project for project in state["projects"] if project["id"] == project_id), None)
+            project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
             if not project:
                 raise ValueError("project_id does not exist")
-            return project
-        if state["projects"]:
-            return state["projects"][0]
+            return dict(project)
+        project = connection.execute("SELECT * FROM projects ORDER BY created_at LIMIT 1").fetchone()
+        if project:
+            return dict(project)
         project = {"id": uuid.uuid4().hex[:10], "name": "General", "created_at": now(), "updated_at": now()}
-        state["projects"].append(project)
+        connection.execute("INSERT INTO projects VALUES (:id, :name, :created_at, :updated_at)", project)
         return project
 
     def add(self, payload: dict) -> dict:
-        with self.transaction():
-            state = self._state()
-            project = self._project(state, payload.get("project_id"))
-            fields = self._validated_item(payload)
+        fields = self._validated_item(payload)
+        with self.transaction() as connection:
+            project = self._project(connection, payload.get("project_id"))
             if fields["parent_id"]:
-                parent = next((item for item in state["items"] if item["id"] == fields["parent_id"]), None)
+                parent = connection.execute("SELECT project_id FROM items WHERE id = ?", (fields["parent_id"],)).fetchone()
                 if not parent:
                     raise ValueError("parent_id does not exist")
-                if parent.get("project_id") != project["id"]:
+                if parent["project_id"] != project["id"]:
                     raise ValueError("parent_id must be in the same project")
             item = {"id": uuid.uuid4().hex[:10], **fields, "project_id": project["id"], "created_at": now(), "updated_at": now()}
-            state["items"].append(item)
-            self.save(state)
-            return item
+            self._backup_before_write()
+            connection.execute(
+                "INSERT INTO items VALUES (:id, :title, :type, :description, :parent_id, :project_id, :status, :priority, :created_at, :updated_at)", item
+            )
+        return item
 
     def update(self, item_id: str, payload: dict) -> dict:
-        with self.transaction():
-            state = self._state()
-            item = next((item for item in state["items"] if item["id"] == item_id), None)
-            if not item:
+        with self.transaction() as connection:
+            row = connection.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+            if not row:
                 raise KeyError("item not found")
+            item = dict(row)
             fields = self._validated_item(payload, item)
-            parent_id = fields["parent_id"]
-            if parent_id:
-                parent = next((other for other in state["items"] if other["id"] == parent_id), None)
+            if fields["parent_id"]:
+                parent = connection.execute("SELECT project_id FROM items WHERE id = ?", (fields["parent_id"],)).fetchone()
                 if not parent:
                     raise ValueError("parent_id does not exist")
-                if parent.get("project_id") != item.get("project_id"):
+                if parent["project_id"] != item["project_id"]:
                     raise ValueError("parent_id must be in the same project")
-                if self._descendant(state["items"], parent_id, item_id):
-                    raise ValueError("an item cannot be its own ancestor")
+                current = fields["parent_id"]
+                while current:
+                    if current == item_id:
+                        raise ValueError("an item cannot be its own ancestor")
+                    parent_row = connection.execute("SELECT parent_id FROM items WHERE id = ?", (current,)).fetchone()
+                    current = parent_row["parent_id"] if parent_row else None
             item.update(fields, updated_at=now())
-            self.save(state)
-            return item
+            self._backup_before_write()
+            connection.execute(
+                "UPDATE items SET title=:title, type=:type, description=:description, parent_id=:parent_id, status=:status, priority=:priority, updated_at=:updated_at WHERE id=:id", item
+            )
+        return item
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -243,10 +322,8 @@ class Handler(SimpleHTTPRequestHandler):
             size = int(self.headers.get("Content-Length", "0"))
         except ValueError as error:
             raise ValueError("Content-Length must be a number") from error
-        if size < 1:
-            raise ValueError("request body must be JSON")
-        if size > 65_536:
-            raise ValueError("request body is too large")
+        if size < 1 or size > 65_536:
+            raise ValueError("request body must be JSON and at most 65536 bytes")
         try:
             payload = json.loads(self.rfile.read(size))
         except json.JSONDecodeError as error:
@@ -256,22 +333,12 @@ class Handler(SimpleHTTPRequestHandler):
         return payload
 
     def do_GET(self):
-        path = urlparse(self.path).path
-        if path == "/api/projects":
-            try:
-                self.send_json(HTTPStatus.OK, self.store.projects())
-            except ValueError as error:
-                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/projects":
+            self.send_json(HTTPStatus.OK, self.store.projects())
             return
-        if path == "/api/items":
-            try:
-                project_id = None
-                query = urlparse(self.path).query
-                if query.startswith("project="):
-                    project_id = query.removeprefix("project=")
-                self.send_json(HTTPStatus.OK, self.store.items(project_id))
-            except ValueError as error:
-                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+        if parsed.path == "/api/items":
+            self.send_json(HTTPStatus.OK, self.store.items(parse_qs(parsed.query).get("project", [None])[0]))
             return
         if self.path == "/":
             self.path = "/index.html"
@@ -287,8 +354,7 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except ValueError as error:
-            status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if "too large" in str(error) else HTTPStatus.BAD_REQUEST
-            self.send_json(status, {"error": str(error)})
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
 
     def do_PATCH(self):
         prefix = "/api/items/"
@@ -301,14 +367,13 @@ class Handler(SimpleHTTPRequestHandler):
         except KeyError as error:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
         except ValueError as error:
-            status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if "too large" in str(error) else HTTPStatus.BAD_REQUEST
-            self.send_json(status, {"error": str(error)})
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
 
 
 def run_server(host: str, port: int) -> None:
     Handler.store = Store(data_path())
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Work Items running at http://{host}:{port} (data: {data_path()})")
+    print(f"Work Items running at http://{host}:{port} (data: {Handler.store.path})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -345,6 +410,16 @@ def cli_project(args: argparse.Namespace) -> None:
         print(json.dumps(project, indent=2))
 
 
+def cli_backup(args: argparse.Namespace) -> None:
+    if configured_url():
+        raise ValueError("Backups are local to the daemon host; run this command there")
+    store = Store(data_path())
+    if args.backup_command == "create":
+        print(store.create_backup())
+    else:
+        print(json.dumps(store.backup_list(), indent=2))
+
+
 def cli_open(args: argparse.Namespace) -> None:
     url = configured_url_for(args.url) if args.url else configured_url()
     url = url or f"http://127.0.0.1:{args.port}"
@@ -366,16 +441,16 @@ def cli_config(args: argparse.Namespace) -> None:
 
 
 def check() -> None:
-    """Fast self-check for persistence, projects, and tree safety."""
+    """Fast self-check for SQLite persistence, backups, projects, and hierarchy safety."""
     with tempfile.TemporaryDirectory() as directory:
-        store = Store(Path(directory) / "items.json")
+        store = Store(Path(directory) / "items.db")
         alpha = store.add_project({"name": "Alpha"})
         beta = store.add_project({"name": "Beta"})
         epic = store.add({"title": "Roadmap", "type": "Epic", "project_id": alpha["id"], "status": "inprogress", "priority": "high", "description": ""})
         task = store.add({"title": "Ship", "type": "Task", "project_id": alpha["id"], "parent_id": epic["id"], "description": ""})
-        assert Store(store.path).items(alpha["id"])[1]["parent_id"] == epic["id"]
+        assert store.items(alpha["id"])[1]["parent_id"] == epic["id"]
         assert epic["status"] == "inprogress" and epic["priority"] == "high"
-        assert not Store(store.path).items(beta["id"])
+        assert store.backup_list()
         try:
             store.add({"title": "Wrong project", "type": "Task", "project_id": beta["id"], "parent_id": epic["id"], "description": ""})
         except ValueError as error:
@@ -388,6 +463,11 @@ def check() -> None:
             assert "ancestor" in str(error)
         else:
             raise AssertionError("cycle accepted")
+        legacy = Path(directory) / "legacy"
+        legacy.mkdir()
+        (legacy / "items.json").write_text('[{"id":"child","title":"Child","type":"Task","description":"","parent_id":"parent","created_at":"x","updated_at":"x"},{"id":"parent","title":"Parent","type":"Epic","description":"","parent_id":null,"created_at":"x","updated_at":"x"}]')
+        migrated = Store(legacy / "items.db")
+        assert migrated.items()[0]["parent_id"] == "parent" and (legacy / "items.json").exists()
     print("check passed")
 
 
@@ -416,12 +496,16 @@ def main() -> None:
     project_sub.add_parser("list", help="print projects as JSON")
     project_add = project_sub.add_parser("add", help="create a project")
     project_add.add_argument("name")
+    backup = sub.add_parser("backup", help="create or list local SQLite backups")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    backup_sub.add_parser("create", help="create a SQLite snapshot now")
+    backup_sub.add_parser("list", help="list local SQLite snapshots")
     config = sub.add_parser("config", help="configure a remote API server for this CLI")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("show", help="show the configured server URL")
     set_url = config_sub.add_parser("set-url", help="save a remote server URL for this device")
     set_url.add_argument("url", help="for example http://work-items.local:37481")
-    config_sub.add_parser("clear-url", help="return this CLI to its local JSON store")
+    config_sub.add_parser("clear-url", help="return this CLI to its local SQLite store")
     sub.add_parser("check", help="run the built-in persistence check")
     args = parser.parse_args()
     if args.command in ("daemon", "serve"):
@@ -434,6 +518,8 @@ def main() -> None:
         cli_list(args)
     elif args.command == "project":
         cli_project(args)
+    elif args.command == "backup":
+        cli_backup(args)
     elif args.command == "config":
         cli_config(args)
     else:

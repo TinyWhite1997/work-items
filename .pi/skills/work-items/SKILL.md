@@ -16,7 +16,7 @@ Use the installed `work-items` command. It operates the same persisted store as 
 4. Create only `Epic`, `Feature`, `Task`, or `Bug` items.
 5. Set status to `open`, `inprogress`, `closed`, `resolved`, or `blocked`, and priority to `low`, `medium`, `high`, or `urgent` when the user supplies them; otherwise accept the CLI defaults (`open`, `medium`).
 6. Query again after a mutation and report the created item ID.
-7. Never edit the JSON data file directly. The CLI/API owns validation, locking, and atomic writes.
+7. Never edit the SQLite database directly. The CLI/API owns validation, transactions, and automatic pre-write backups.
 
 ```sh
 work-items config show
@@ -43,7 +43,7 @@ For a one-command override that does not modify persistent configuration:
 WORK_ITEMS_URL=https://SERVER:37481 work-items list
 ```
 
-Use `work-items config clear-url` to return the client to local storage.
+Use `work-items config clear-url` to return the client to local SQLite storage. On the daemon host, use `work-items backup list` to inspect automatic SQLite snapshots or `work-items backup create` to create one before a high-risk change.
 
 ## Hosting
 
