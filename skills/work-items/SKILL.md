@@ -27,6 +27,16 @@ work-items add "Nested work" --type Task --project PROJECT_ID --parent PARENT_ID
 work-items list --project PROJECT_ID --parent PARENT_ID
 ```
 
+## Shared item URLs
+
+When the user supplies a Work Items URL containing `?item=ITEM_ID`, fetch it directly instead of asking for the ID again:
+
+```sh
+work-items get 'https://SERVER:37481/?item=ITEM_ID'
+```
+
+For a bare ID, use `work-items get ITEM_ID`. The command prints the item JSON from the URL's server, even if the CLI normally points at another configured server.
+
 ## Remote server
 
 A client uses its own saved server address. Configure it only when the user supplies or approves the endpoint:

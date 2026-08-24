@@ -197,6 +197,13 @@ class Store:
                 return self._rows(connection.execute("SELECT * FROM items WHERE project_id = ? ORDER BY created_at", (project_id,)))
             return self._rows(connection.execute("SELECT * FROM items ORDER BY created_at"))
 
+    def item(self, item_id: str) -> dict:
+        with self._connect() as connection:
+            item = connection.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+            if not item:
+                raise KeyError("item not found")
+            return dict(item)
+
     def backup_list(self) -> list[dict]:
         return [{"path": str(path), "bytes": path.stat().st_size} for path in sorted(self.backups.glob("*"), reverse=True)] if self.backups.exists() else []
 
@@ -340,6 +347,12 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/items":
             self.send_json(HTTPStatus.OK, self.store.items(parse_qs(parsed.query).get("project", [None])[0]))
             return
+        if parsed.path.startswith("/api/items/") and parsed.path[len("/api/items/"):]:
+            try:
+                self.send_json(HTTPStatus.OK, self.store.item(parsed.path[len("/api/items/"):]))
+            except KeyError as error:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+            return
         if self.path == "/":
             self.path = "/index.html"
         return super().do_GET()
@@ -397,6 +410,19 @@ def cli_list(args: argparse.Namespace) -> None:
     if args.parent is not None:
         items = [item for item in items if item.get("parent_id") == args.parent]
     print(json.dumps(items, indent=2))
+
+
+def cli_get(args: argparse.Namespace) -> None:
+    reference = urlparse(args.item)
+    item_id = args.item
+    url = configured_url()
+    if reference.scheme:
+        item_id = parse_qs(reference.query).get("item", [""])[0]
+        url = f"{reference.scheme}://{reference.netloc}"
+    if not item_id:
+        raise ValueError("item reference must be an item ID or a URL containing ?item=ITEM_ID")
+    item = remote_request(url, f"/api/items/{item_id}") if url else Store(data_path()).item(item_id)
+    print(json.dumps(item, indent=2))
 
 
 def cli_project(args: argparse.Namespace) -> None:
@@ -491,6 +517,8 @@ def main() -> None:
     listing = sub.add_parser("list", help="print stored items as JSON")
     listing.add_argument("--project", help="only items in this project")
     listing.add_argument("--parent", help="only items with this parent ID")
+    get = sub.add_parser("get", help="print one item from its ID or share URL")
+    get.add_argument("item", help="item ID or URL containing ?item=ITEM_ID")
     project = sub.add_parser("project", help="create or query projects")
     project_sub = project.add_subparsers(dest="project_command", required=True)
     project_sub.add_parser("list", help="print projects as JSON")
@@ -516,6 +544,8 @@ def main() -> None:
         cli_add(args)
     elif args.command == "list":
         cli_list(args)
+    elif args.command == "get":
+        cli_get(args)
     elif args.command == "project":
         cli_project(args)
     elif args.command == "backup":

@@ -61,6 +61,10 @@ work-items list --project PROJECT_ID
 work-items add "Core UI" --type Feature --project PROJECT_ID --parent EPIC_ID --status open --priority medium
 work-items list --project PROJECT_ID --parent EPIC_ID
 
+# Fetch one item by ID or by a copied share URL.
+work-items get ITEM_ID
+work-items get 'https://SERVER:37481/?item=ITEM_ID'
+
 # Return this CLI to its local SQLite store.
 work-items config clear-url
 
@@ -69,7 +73,7 @@ work-items backup list
 work-items backup create
 ```
 
-The URL is stored in `~/.config/work-items/config.json` (override with `WORK_ITEMS_CONFIG`). `WORK_ITEMS_URL=http://SERVER_IP:37481` temporarily overrides it, useful for scripts. Output is JSON, including the generated `id`. Types must be `Epic`, `Feature`, `Task`, or `Bug`. Every local mutation creates a pre-write SQLite snapshot in `~/.local/share/work-items/backups/`; the latest 100 are retained. Legacy `items.json` is imported once into SQLite and retained as a migration backup.
+The URL is stored in `~/.config/work-items/config.json` (override with `WORK_ITEMS_CONFIG`). `WORK_ITEMS_URL=http://SERVER_IP:37481` temporarily overrides it, useful for scripts. Output is JSON, including the generated `id`. Types must be `Epic`, `Feature`, `Task`, or `Bug`. Every local mutation creates a pre-write SQLite snapshot in `~/.local/share/work-items/backups/`; the latest 100 are retained. Legacy `items.json` is imported once into SQLite and retained as a migration backup. Selecting an item puts its ID in the browser URL as `?item=ITEM_ID`; that URL opens the item directly and can be passed to `work-items get`.
 
 The first release has no authentication: expose `0.0.0.0` only on a trusted LAN or behind your own network protection.
 
