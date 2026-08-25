@@ -1,3 +1,3 @@
 """Local-first work-item manager."""
 
-__version__ = "0.0.7"
+__version__ = "0.0.8"

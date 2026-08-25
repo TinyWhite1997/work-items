@@ -316,6 +316,12 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("web:", fmt % args)
 
+    def end_headers(self):
+        # The app shell and API must always revalidate so installed browser apps receive new builds and current data.
+        if self.path.split("?", 1)[0] in ("/", "/index.html") or self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store, max-age=0")
+        super().end_headers()
+
     def send_json(self, status: int, body) -> None:
         encoded = json.dumps(body).encode()
         self.send_response(status)
